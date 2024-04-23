@@ -2,11 +2,13 @@
 
 # Form implementation generated from reading ui file 'web_view.ui'
 #
-# Created by: PyQt5 UI code generator 5.10.1
+# Created by: PyQt5 UI code generator 5.14.1
 #
 # WARNING! All changes made in this file will be lost!
 
+
 from PyQt5 import QtCore, QtGui, QtWidgets
+
 
 class Ui_WebViewGroupBox(object):
     def setupUi(self, WebViewGroupBox):
@@ -26,6 +28,5 @@ class Ui_WebViewGroupBox(object):
         _translate = QtCore.QCoreApplication.translate
         WebViewGroupBox.setWindowTitle(_translate("WebViewGroupBox", "Tree View"))
         WebViewGroupBox.setTitle(_translate("WebViewGroupBox", "GroupBox"))
-
 from PyQt5 import QtWebEngineWidgets
 from . import web_app_rc
