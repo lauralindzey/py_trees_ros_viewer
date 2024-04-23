@@ -23,17 +23,17 @@ import typing
 
 import PyQt5.QtCore as qt_core
 
-import py_trees_ros_interfaces.msg as py_trees_msgs
-import py_trees_ros_interfaces.srv as py_trees_srvs
-import rcl_interfaces.msg as rcl_msgs
-import rcl_interfaces.srv as rcl_srvs
-import rclpy
-import rclpy.node
+# import rcl_interfaces.msg as rcl_msgs
+# import rcl_interfaces.srv as rcl_srvs
+# import rclpy
+# import rclpy.node
+import rospy
+import rosservice
 
-from . import console
-from . import conversions
-from . import exceptions
-from . import utilities
+import py_trees_ros_interfaces.msg
+import py_trees_ros_interfaces.srv
+
+from . import console, conversions, exceptions, utilities
 
 ##############################################################################
 # Helpers
@@ -56,28 +56,29 @@ class SnapshotStream(object):
             blackboard_activity: enable and publish blackboard activity in the last tick
             snapshot_period: period between snapshots (use /inf to only publish on tree status changes)
         """
+
         def __init__(
             self,
-            blackboard_data: bool=False,
-            blackboard_activity: bool=False,
-            snapshot_period: float=math.inf
+            blackboard_data: bool = False,
+            blackboard_activity: bool = False,
+            snapshot_period: float = math.inf,
         ):
             self.blackboard_data = blackboard_data
             self.blackboard_activity = blackboard_activity
             self.snapshot_period = snapshot_period
 
         def __eq__(self, other):
-            return ((self.blackboard_data == other.blackboard_data) and
-                    (self.blackboard_activity == other.blackboard_activity) and
-                    (self.snapshot_period == other.snapshot_period)
-                    )
+            return (
+                (self.blackboard_data == other.blackboard_data)
+                and (self.blackboard_activity == other.blackboard_activity)
+                and (self.snapshot_period == other.snapshot_period)
+            )
 
     def __init__(
         self,
-        node: rclpy.node.Node,
         namespace: str,
-        parameters: 'SnapshotStream.Parameters',
-        callback: typing.Callable[[py_trees_msgs.BehaviourTree], None],
+        parameters: "SnapshotStream.Parameters",
+        callback: typing.Callable[[py_trees_ros_interfaces.msg.BehaviourTree], None],
     ):
         """
         Args:
@@ -89,33 +90,32 @@ class SnapshotStream(object):
         """
 
         self.namespace = namespace
-        self.parameters = copy.copy(parameters) if parameters is not None else SnapshotStream.Parameters()
-        self.node = node
+        self.parameters = (
+            copy.copy(parameters)
+            if parameters is not None
+            else SnapshotStream.Parameters()
+        )
         self.callback = callback
 
         self.topic_name = None
         self.subscriber = None
 
-        self.services = {
-            'open': None,
-            'close': None,
-            'reconfigure': None
-        }
+        self.services = {"open": None, "close": None, "reconfigure": None}
 
         self.service_names = {
-            'open': self.namespace + "/open",
-            'close': self.namespace + "/close",
-            'reconfigure': self.namespace + "/reconfigure",
+            "open": self.namespace + "/open",
+            "close": self.namespace + "/close",
+            "reconfigure": self.namespace + "/reconfigure",
         }
         self.service_type_strings = {
-            'open': 'py_trees_ros_interfaces/srv/OpenSnapshotStream',
-            'close': 'py_trees_ros_interfaces/srv/CloseSnapshotStream',
-            'reconfigure': 'py_trees_ros_interfaces/srv/ReconfigureSnapshotStream'
+            "open": "py_trees_ros_interfaces/srv/OpenSnapshotStream",
+            "close": "py_trees_ros_interfaces/srv/CloseSnapshotStream",
+            "reconfigure": "py_trees_ros_interfaces/srv/ReconfigureSnapshotStream",
         }
         self.service_types = {
-            'open': py_trees_srvs.OpenSnapshotStream,
-            'close': py_trees_srvs.CloseSnapshotStream,
-            'reconfigure': py_trees_srvs.ReconfigureSnapshotStream
+            "open": py_trees_ros_interfaces.srv.OpenSnapshotStream,
+            "close": py_trees_ros_interfaces.srv.CloseSnapshotStream,
+            "reconfigure": py_trees_ros_interfaces.srv.ReconfigureSnapshotStream,
         }
         # create service clients
         self.services["open"] = self.create_service_client(key="open")
@@ -125,7 +125,7 @@ class SnapshotStream(object):
         # create connection
         self._connect_on_init()
 
-    def reconfigure(self, parameters: 'SnapshotStream.Parameters'):
+    def reconfigure(self, parameters: "SnapshotStream.Parameters"):
         """
         Reconfigure the stream.
 
@@ -158,7 +158,11 @@ class SnapshotStream(object):
         request.parameters.blackboard_data = self.parameters.blackboard_data
         request.parameters.blackboard_activity = self.parameters.blackboard_activity
         request.parameters.snapshot_period = self.parameters.snapshot_period
-        console.logdebug("establishing a snapshot stream connection [{}][backend]".format(self.namespace))
+        console.logdebug(
+            "establishing a snapshot stream connection [{}][backend]".format(
+                self.namespace
+            )
+        )
         future = self.services["open"].call_async(request)
         rclpy.spin_until_future_complete(self.node, future)
         response = future.result()
@@ -168,28 +172,35 @@ class SnapshotStream(object):
         while True:
             elapsed_time = time.monotonic() - start_time
             if elapsed_time > timeout_sec:
-                raise exceptions.TimedOutError("timed out waiting for a snapshot stream publisher [{}]".format(self.topic_name))
+                raise exceptions.TimedOutError(
+                    "timed out waiting for a snapshot stream publisher [{}]".format(
+                        self.topic_name
+                    )
+                )
             if self.node.count_publishers(self.topic_name) > 0:
                 break
             time.sleep(0.1)
-        self.subscriber = self.node.create_subscription(
-            msg_type=py_trees_msgs.BehaviourTree,
-            topic=self.topic_name,
+        self.subscriber = rospy.Subscriber(
+            self.topic_name,
+            py_trees_ros_interfaces.msg.BehaviourTree,
             callback=self.callback,
-            qos_profile=utilities.qos_profile_latched()
         )
         console.logdebug("  ...ok [backend]")
 
     def shutdown(self):
-        if rclpy.ok() and self.services["close"] is not None:
+        if not rospy.is_shutdown() and self.services["close"] is not None:
             request = self.service_types["close"].Request()
             request.topic_name = self.topic_name
-            future = self.services["close"].call_async(request)
-            rclpy.spin_until_future_complete(
-                node=self.node,
-                future=future,
-                timeout_sec=0.5)
-            unused_response = future.result()
+            # TODO: the ROS2 version did this async with a timeout.
+            #   I'm not sure what the ROS1 equivalent is, given that
+            #   timeouts aren't supported. the wait_for_service call tries
+            #   to approximate that, but isn't robust to the server dying
+            #   between these two calls, or during the request.
+            try:
+                self.services["close"].wait_for_service(timeout=0.5)
+                unused_response = self.services["close"](request)
+            except Exception:
+                pass
 
     def create_service_client(self, key: str):
         """
@@ -204,19 +215,23 @@ class SnapshotStream(object):
         """
         if self.service_names[key] is None:
             raise exceptions.NotReadyError(
-                "no known '{}' service known [did you call setup()?]".format(self.service_types[key])
+                "no known '{}' service known [did you call setup()?]".format(
+                    self.service_types[key]
+                )
             )
-        client = self.node.create_client(
-            srv_type=self.service_types[key],
+        client = rospy.ServiceProxy(
             srv_name=self.service_names[key],
-            qos_profile=rclpy.qos.qos_profile_services_default
+            srv_type=self.service_types[key],
         )
         # hardcoding timeouts will get us into trouble
-        if not client.wait_for_service(timeout_sec=3.0):
+        try:
+            client.wait_for_service(timeout_sec=3.0)
+        except Exception:
             raise exceptions.TimedOutError(
-                "timed out waiting for {}".format(self.service_names['close'])
+                "timed out waiting for {}".format(self.service_names[key])
             )
         return client
+
 
 ##############################################################################
 # Backend
@@ -225,15 +240,16 @@ class SnapshotStream(object):
 
 class Backend(qt_core.QObject):
 
-    discovered_namespaces_changed = qt_core.pyqtSignal(list, name="discoveredNamespacesChanged")
+    discovered_namespaces_changed = qt_core.pyqtSignal(
+        list, name="discoveredNamespacesChanged"
+    )
     tree_snapshot_arrived = qt_core.pyqtSignal(dict, name="treeSnapshotArrived")
 
     def __init__(self, parameters):
         super().__init__()
         default_node_name = "tree_viewer_" + str(os.getpid())
-        self.node = rclpy.create_node(default_node_name)
         self.shutdown_requested = False
-        self.snapshot_stream_type = py_trees_msgs.BehaviourTree
+        self.snapshot_stream_type = py_trees_ros_interfaces.msg.BehaviourTree
         self.discovered_namespaces = []
         self.discovered_timestamp = time.monotonic()
         self.discovery_loop_time_sec = 3.0
@@ -247,7 +263,7 @@ class Backend(qt_core.QObject):
     def spin(self):
         with self.lock:
             old_parameters = copy.copy(self.parameters)
-        while rclpy.ok() and not self.shutdown_requested:
+        while not rospy.is_shutdown() and not self.shutdown_requested:
             self.discover_namespaces()
             with self.lock:
                 if self.parameters != old_parameters:
@@ -257,10 +273,10 @@ class Backend(qt_core.QObject):
                 if self.enqueued_connection_request_namespace is not None:
                     self.connect(self.enqueued_connection_request_namespace)
                     self.enqueued_connection_request_namespace = None
-            rclpy.spin_once(self.node, timeout_sec=0.1)
+            # rospy doesn't have a spin_once
+            # rclpy.spin_once(self.node, timeout_sec=0.1)
         if self.snapshot_stream is not None:
             self.snapshot_stream.shutdown()
-        self.node.destroy_node()
 
     def terminate_ros_spinner(self):
         self.node.get_logger().info("shutdown requested [backend]")
@@ -278,14 +294,24 @@ class Backend(qt_core.QObject):
         if self.discovered_namespaces and (time.monotonic() < timeout):
             return
         open_service_type_string = "py_trees_ros_interfaces/srv/OpenSnapshotStream"
-        service_names_and_types = self.node.get_service_names_and_types()
-        new_service_names = [name for name, types in service_names_and_types if open_service_type_string in types]
+        new_service_names = [
+            service_name
+            for service_name in rosservice.get_service_list()
+            if py_trees_ros_interfaces.srv.OpenSnapshotStream
+            == rosservice.get_service_class_by_name(service_name)
+        ]
         new_service_names.sort()
-        new_namespaces = [utilities.parent_namespace(name) for name in new_service_names]
+        new_namespaces = [
+            utilities.parent_namespace(name) for name in new_service_names
+        ]
         if self.discovered_namespaces != new_namespaces:
             self.discovered_namespaces = new_namespaces
             self.discovered_namespaces_changed.emit(self.discovered_namespaces)
-            console.logdebug("discovered namespaces changed {}[backend]".format(self.discovered_namespaces))
+            console.logdebug(
+                "discovered namespaces changed {}[backend]".format(
+                    self.discovered_namespaces
+                )
+            )
         self.discovered_timestamp = time.monotonic()
 
     def connect(self, namespace):
@@ -296,15 +322,21 @@ class Backend(qt_core.QObject):
             namespace: in which to find snapshot stream services
         """
         if self.snapshot_stream is not None:
-            console.logdebug("cancelling existing snapshot stream connection [{}][backend]".format(self.snapshot_stream_watcher))
+            console.logdebug(
+                "cancelling existing snapshot stream connection [{}][backend]".format(
+                    self.snapshot_stream_watcher
+                )
+            )
             self.snapshot_stream.shutdown()
             self.snapshot_stream = None
-        console.logdebug("creating a new snapshot stream connection [{}][backend]".format(namespace))
+        console.logdebug(
+            "creating a new snapshot stream connection [{}][backend]".format(namespace)
+        )
         self.snapshot_stream = SnapshotStream(
             node=self.node,
             namespace=namespace,
             callback=self.tree_snapshot_handler,
-            parameters=self.parameters
+            parameters=self.parameters,
         )
 
     def snapshot_blackboard_data(self, snapshot: bool):
@@ -318,7 +350,7 @@ class Backend(qt_core.QObject):
             unused_future = self.parameter_client.call_async(request)
         self.parameters.snapshot_blackboard_data = snapshot
 
-    def tree_snapshot_handler(self, msg: py_trees_msgs.BehaviourTree):
+    def tree_snapshot_handler(self, msg: py_trees_ros_interfaces.msg.BehaviourTree):
         """
         Callback to receive incoming tree snapshots before relaying them to the web application.
 
@@ -332,18 +364,19 @@ class Backend(qt_core.QObject):
         """
         console.logdebug("handling incoming tree snapshot [backend]")
         colours = {
-            'Sequence': '#FFA500',
-            'Selector': '#00FFFF',
-            'Parallel': '#FFFF00',
-            'Behaviour': '#555555',
-            'Decorator': '#DDDDDD',
+            "Sequence": "#FFA500",
+            "Selector": "#00FFFF",
+            "Parallel": "#FFFF00",
+            "Behaviour": "#555555",
+            "Decorator": "#DDDDDD",
         }
         tree = {
-            'changed': "true" if msg.changed else "false",
-            'timestamp': msg.statistics.stamp.sec + float(msg.statistics.stamp.nanosec) / 1.0e9,
-            'behaviours': {},
-            'blackboard': {'behaviours': {}, 'data': {}},
-            'visited_path': []
+            "changed": "true" if msg.changed else "false",
+            "timestamp": msg.statistics.stamp.sec
+            + float(msg.statistics.stamp.nanosec) / 1.0e9,
+            "behaviours": {},
+            "blackboard": {"behaviours": {}, "data": {}},
+            "visited_path": [],
         }
         # hack, update the blackboard from visited path contexts
         blackboard_variables = {}
@@ -353,70 +386,125 @@ class Backend(qt_core.QObject):
             behaviour_id = str(conversions.msg_to_uuid4(behaviour.own_id))
             behaviour_type = conversions.msg_constant_to_behaviour_str(behaviour.type)
             if behaviour.is_active:
-                tree['visited_path'].append(behaviour_id)
-            tree['behaviours'][behaviour_id] = {
-                'id': behaviour_id,
-                'status': conversions.msg_constant_to_status_str(behaviour.status),
-                'name': utilities.normalise_name_strings(behaviour.name),
-                'colour': colours[behaviour_type],
-                'details': behaviour.additional_detail,
-                'children': [str(conversions.msg_to_uuid4(child_id)) for child_id in behaviour.child_ids],
-                'data': {
-                    'Class': behaviour.class_name,
-                    'Feedback': behaviour.message,
+                tree["visited_path"].append(behaviour_id)
+            tree["behaviours"][behaviour_id] = {
+                "id": behaviour_id,
+                "status": conversions.msg_constant_to_status_str(behaviour.status),
+                "name": utilities.normalise_name_strings(behaviour.name),
+                "colour": colours[behaviour_type],
+                "details": behaviour.additional_detail,
+                "children": [
+                    str(conversions.msg_to_uuid4(child_id))
+                    for child_id in behaviour.child_ids
+                ],
+                "data": {
+                    "Class": behaviour.class_name,
+                    "Feedback": behaviour.message,
                 },
             }
             if behaviour.blackboard_access:
                 variables = []
                 for variable in behaviour.blackboard_access:
                     variables.append(variable.key + " ({})".format(variable.value))
-                    tree['blackboard']['behaviours'].setdefault(behaviour_id, {})[variable.key] = variable.value
-                tree['behaviours'][behaviour_id]['data']['Blackboard'] = variables
+                    tree["blackboard"]["behaviours"].setdefault(behaviour_id, {})[
+                        variable.key
+                    ] = variable.value
+                tree["behaviours"][behaviour_id]["data"]["Blackboard"] = variables
                 # delete keys from the cache if they aren't in the visited variables list when
                 # they should be (i.e. their parent behaviour is on the visited path and has
                 # 'w' or 'x' permissions on the variable).
                 if (
-                    variable.key in self.cached_blackboard and
-                    variable.value != 'r' and
-                    behaviour.is_active and
-                    variable.key not in blackboard_variables
+                    variable.key in self.cached_blackboard
+                    and variable.value != "r"
+                    and behaviour.is_active
+                    and variable.key not in blackboard_variables
                 ):
                     del self.cached_blackboard[variable.key]
         # hack, update the blackboard from visited path contexts
         self.cached_blackboard.update(blackboard_variables)
         if self.snapshot_stream.parameters.blackboard_data:
-            tree['blackboard']['data'] = copy.deepcopy(self.cached_blackboard)
+            tree["blackboard"]["data"] = copy.deepcopy(self.cached_blackboard)
         if self.snapshot_stream.parameters.blackboard_activity:
             xhtml = utilities.XhtmlSymbols()
             xhtml_snippet = "<table>"
             for item in msg.blackboard_activity:
                 if item.activity_type == "READ":
-                    info = xhtml.normal + xhtml.left_arrow + xhtml.space + item.current_value + xhtml.reset
+                    info = (
+                        xhtml.normal
+                        + xhtml.left_arrow
+                        + xhtml.space
+                        + item.current_value
+                        + xhtml.reset
+                    )
                 elif item.activity_type == "WRITE":
-                    info = xhtml.green + xhtml.right_arrow + xhtml.space + item.current_value + xhtml.reset
+                    info = (
+                        xhtml.green
+                        + xhtml.right_arrow
+                        + xhtml.space
+                        + item.current_value
+                        + xhtml.reset
+                    )
                 elif item.activity_type == "ACCESSED":
-                    info = xhtml.yellow + xhtml.left_right_arrow + xhtml.space + item.current_value + xhtml.reset
+                    info = (
+                        xhtml.yellow
+                        + xhtml.left_right_arrow
+                        + xhtml.space
+                        + item.current_value
+                        + xhtml.reset
+                    )
                 elif item.activity_type == "ACCESS_DENIED":
-                    info = xhtml.red + xhtml.multiplication_x + xhtml.space + "client has no read/write access" + xhtml.reset
+                    info = (
+                        xhtml.red
+                        + xhtml.multiplication_x
+                        + xhtml.space
+                        + "client has no read/write access"
+                        + xhtml.reset
+                    )
                 elif item.activity_type == "NO_KEY":
-                    info = xhtml.red + xhtml.multiplication_x + xhtml.space + "key does not yet exist" + xhtml.reset
+                    info = (
+                        xhtml.red
+                        + xhtml.multiplication_x
+                        + xhtml.space
+                        + "key does not yet exist"
+                        + xhtml.reset
+                    )
                 elif item.activity_type == "NO_OVERWRITE":
-                    info = xhtml.yellow + xhtml.forbidden_circle + xhtml.space + item.current_value + xhtml.reset
+                    info = (
+                        xhtml.yellow
+                        + xhtml.forbidden_circle
+                        + xhtml.space
+                        + item.current_value
+                        + xhtml.reset
+                    )
                 elif item.activity_type == "UNSET":
                     info = ""
                 elif item.activity_type == "INITIALISED":
-                    info = xhtml.green + xhtml.right_arrow + xhtml.space + item.current_value + xhtml.reset
+                    info = (
+                        xhtml.green
+                        + xhtml.right_arrow
+                        + xhtml.space
+                        + item.current_value
+                        + xhtml.reset
+                    )
                 else:
                     info = ""
                 xhtml_snippet += (
                     "<tr>"
                     "<td>" + xhtml.cyan + item.key + xhtml.reset + "</td>"
-                    "<td style='text-align: center;'>" + xhtml.yellow + item.activity_type + xhtml.reset + "</td>"
-                    "<td style='text-align: center;'>" + xhtml.normal + item.client_name + xhtml.reset + "</td>"
+                    "<td style='text-align: center;'>"
+                    + xhtml.yellow
+                    + item.activity_type
+                    + xhtml.reset
+                    + "</td>"
+                    "<td style='text-align: center;'>"
+                    + xhtml.normal
+                    + item.client_name
+                    + xhtml.reset
+                    + "</td>"
                     "<td>" + info + "</td>"
                     "</tr>"
                 )
             xhtml_snippet += "</table>"
-            tree['activity'] = [xhtml_snippet]
+            tree["activity"] = [xhtml_snippet]
 
         self.tree_snapshot_arrived.emit(tree)
