@@ -125,7 +125,7 @@ class SnapshotStream(object):
         # create connection
         self._connect_on_init()
 
-    def reconfigure(self, parameters: "SnapshotStream.Parameters"):
+    def reconfigure(self, parameters: "SnapshotStream.Parameters") -> None:
         """
         Reconfigure the stream.
 
@@ -135,14 +135,17 @@ class SnapshotStream(object):
         if self.parameters == parameters:
             return
         self.parameters = copy.copy(parameters)
-        request = self.service_types["reconfigure"].Request()
+        request = self.service_types["reconfigure"]._request_class()
         request.topic_name = self.topic_name
         request.parameters.blackboard_data = self.parameters.blackboard_data
         request.parameters.blackboard_activity = self.parameters.blackboard_activity
         request.parameters.snapshot_period = self.parameters.snapshot_period
-        unused_future = self.services["reconfigure"].call_async(request)
+        if self.services["reconfigure"] is not None:
+            unused_response = self.services["reconfigure"](request)
+        else:
+            rospy.logwarn("Tried to call reconfigure but ServiceProxy is None")
 
-    def _connect_on_init(self, timeout_sec=1.0):
+    def _connect_on_init(self, timeout_sec: float = 1.0) -> None:
         """
         Request a snapshot stream and make a connection to it.
 
@@ -154,7 +157,7 @@ class SnapshotStream(object):
             :class:`~py_trees_ros.exceptions.TimedOutError`: if it times out waiting for the server
         """
         # request a stream
-        request = self.service_types["open"].Request()
+        request = self.service_types["open"]._request_class()
         request.parameters.blackboard_data = self.parameters.blackboard_data
         request.parameters.blackboard_activity = self.parameters.blackboard_activity
         request.parameters.snapshot_period = self.parameters.snapshot_period
@@ -163,13 +166,18 @@ class SnapshotStream(object):
                 self.namespace
             )
         )
-        future = self.services["open"].call_async(request)
-        rclpy.spin_until_future_complete(self.node, future)
-        response = future.result()
+        if self.services["open"] is not None:
+            response = self.services["open"](request)
+        else:
+            rospy.logerr("Trying to call open, but ServiceProxy is None")
+            raise Exception
         self.topic_name = response.topic_name
         # connect to a snapshot stream
         start_time = time.monotonic()
         while True:
+            all_topics = [topic for topic, _msg_type in rospy.get_published_topics()]
+            if self.topic_name in all_topics:
+                break
             elapsed_time = time.monotonic() - start_time
             if elapsed_time > timeout_sec:
                 raise exceptions.TimedOutError(
@@ -177,8 +185,6 @@ class SnapshotStream(object):
                         self.topic_name
                     )
                 )
-            if self.node.count_publishers(self.topic_name) > 0:
-                break
             time.sleep(0.1)
         self.subscriber = rospy.Subscriber(
             self.topic_name,
@@ -189,7 +195,7 @@ class SnapshotStream(object):
 
     def shutdown(self):
         if not rospy.is_shutdown() and self.services["close"] is not None:
-            request = self.service_types["close"].Request()
+            request = self.service_types["close"]._request_type()
             request.topic_name = self.topic_name
             # TODO: the ROS2 version did this async with a timeout.
             #   I'm not sure what the ROS1 equivalent is, given that
@@ -220,12 +226,12 @@ class SnapshotStream(object):
                 )
             )
         client = rospy.ServiceProxy(
-            srv_name=self.service_names[key],
-            srv_type=self.service_types[key],
+            self.service_names[key],
+            self.service_types[key],
         )
         # hardcoding timeouts will get us into trouble
         try:
-            client.wait_for_service(timeout_sec=3.0)
+            client.wait_for_service(3.0)
         except Exception:
             raise exceptions.TimedOutError(
                 "timed out waiting for {}".format(self.service_names[key])
@@ -333,22 +339,22 @@ class Backend(qt_core.QObject):
             "creating a new snapshot stream connection [{}][backend]".format(namespace)
         )
         self.snapshot_stream = SnapshotStream(
-            node=self.node,
             namespace=namespace,
             callback=self.tree_snapshot_handler,
             parameters=self.parameters,
         )
 
-    def snapshot_blackboard_data(self, snapshot: bool):
-        if self.parameter_client is not None:
-            request = rcl_srvs.SetParameters.Request()  # noqa
-            parameter = rcl_msgs.Parameter()
-            parameter.name = "snapshot_blackboard_data"
-            parameter.value.type = rcl_msgs.ParameterType.PARAMETER_BOOL  # noqa
-            parameter.value.bool_value = snapshot
-            request.parameters.append(parameter)
-            unused_future = self.parameter_client.call_async(request)
-        self.parameters.snapshot_blackboard_data = snapshot
+    # # Apparently unused?
+    # def snapshot_blackboard_data(self, snapshot: bool):
+    #     if self.parameter_client is not None:
+    #         request = rcl_srvs.SetParameters.Request()  # noqa
+    #         parameter = rcl_msgs.Parameter()
+    #         parameter.name = "snapshot_blackboard_data"
+    #         parameter.value.type = rcl_msgs.ParameterType.PARAMETER_BOOL  # noqa
+    #         parameter.value.bool_value = snapshot
+    #         request.parameters.append(parameter)
+    #         unused_future = self.parameter_client.call_async(request)
+    #     self.parameters.snapshot_blackboard_data = snapshot
 
     def tree_snapshot_handler(self, msg: py_trees_ros_interfaces.msg.BehaviourTree):
         """
@@ -372,8 +378,7 @@ class Backend(qt_core.QObject):
         }
         tree = {
             "changed": "true" if msg.changed else "false",
-            "timestamp": msg.statistics.stamp.sec
-            + float(msg.statistics.stamp.nanosec) / 1.0e9,
+            "timestamp": msg.statistics.stamp.data.to_sec(),
             "behaviours": {},
             "blackboard": {"behaviours": {}, "data": {}},
             "visited_path": [],
